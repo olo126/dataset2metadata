@@ -22,11 +22,10 @@ import yaml
 from PIL import ImageFile
 import wandb
 
-# REMOVED dataset2metadata.~
-from dataloaders import create_loader
-from registry import update_registry
-from utils import topsort, download_all
-from writer import Writer
+from dataset2metadata.dataloaders import create_loader
+from dataset2metadata.registry import update_registry
+from dataset2metadata.utils import topsort, download_all
+from dataset2metadata.writer import Writer
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 logging.getLogger().setLevel(logging.INFO)
