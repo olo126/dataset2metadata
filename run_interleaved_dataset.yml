@@ -1,0 +1,15 @@
+models: # model directives, specifying the models to instantiate
+  - oai-clip-vit-l14
+  - nsfw-image-oai-clip-vit-l-14
+postprocess_columns: # postprocessing directives
+  - nsfw-image-score
+postprocess_features: # saved in an npz format
+  - oai-clip-vit-l14-image
+  - oai-clip-vit-l14-text
+nworkers: 1
+batch_size: 512
+device: 0
+input_tars: "/mmfs1/gscratch/efml/olo126/interleaved-datasets/html-docs-sample" # braceexpand suported, can also be s3 paths
+output_metadata_dir: "interleaved-datasets_output" # can be arbitrary path
+custom_pypath: null # if model, preprocessors, postprocessors not known, look in this python file for user provided custom implementation
+reprocess: True # if true will process from scratch, else will just process tars not already processed
