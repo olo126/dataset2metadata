@@ -7,6 +7,7 @@ from queue import Empty, Queue
 from typing import List
 from tqdm import tqdm
 import time
+import json
 
 import torch
 
@@ -21,10 +22,11 @@ import yaml
 from PIL import ImageFile
 import wandb
 
-from dataset2metadata.dataloaders import create_loader
-from dataset2metadata.registry import update_registry
-from dataset2metadata.utils import topsort, download_all
-from dataset2metadata.writer import Writer
+# REMOVED dataset2metadata.~
+from dataloaders import create_loader
+from registry import update_registry
+from utils import topsort, download_all
+from writer import Writer
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 logging.getLogger().setLevel(logging.INFO)
@@ -79,6 +81,8 @@ def process_helper(
 
     logging.info(f"topsort model evaluation order: {topsort_order}")
 
+    total_start_time = time.time()
+    image_count = 0
     while True:
         # for name, group in zip(names, groups):
         group, name = None, None
@@ -87,12 +91,16 @@ def process_helper(
         except Empty:
             # case where the queue is depleated, worker should return
             break
+        
+        process_time_start = time.time()
 
         # create dataloader based on user input
+        # CHANGED yml['additional_field'] to None
+
         dataloader, input_map = create_loader(
             group,
             yml["models"],
-            yml["additional_fields"],
+            None,
             yml["nworkers"],
             yml["batch_size"],
         )
@@ -104,8 +112,8 @@ def process_helper(
             feature_fields = yml["postprocess_features"]
         if "postprocess_columns" in yml:
             parquet_fields.extend(yml["postprocess_columns"])
-        if "additional_fields" in yml:
-            parquet_fields.extend(yml["additional_fields"])
+        #if "additional_fields" in yml:
+        #    parquet_fields.extend(yml["additional_fields"])
 
         writer = Writer(
             name,
@@ -114,12 +122,21 @@ def process_helper(
             yml["use_datacomp_keys"] if "use_datacomp_keys" in yml else False,
         )
 
+        if dataloader == None:
+            logging.info(f"starting to write: {writer.name}")
+            logging.info(f"input not found: {group}")
+            out_queue.put_nowait((writer, yml["output_metadata_dir"]))
+            time.sleep(5)
+            logging.info(f"continuing on gpu!")
+            continue
+
         t_loader_end = None
         t_inference_start = None
         t_inference_end = None
         t_loader_start = time.time()
 
         for sample in dataloader:
+            image_count += sample[0].size()[0]
             t_loader_end = time.time()
 
             model_outputs = {}
@@ -158,10 +175,14 @@ def process_helper(
                     model_outputs[m_str] = models[m_str](*model_input)
 
                 # TODO: make this more general, right now assumes last entry is json fields
-                if len(yml["additional_fields"]):
-                    model_outputs["json"] = sample[-1]
+                #if len(yml["additional_fields"]):
+                #    model_outputs["json"] = sample[-1]
 
             t_inference_end = time.time()
+
+            if (model_outputs['nsfw-image-oai-clip-vit-l-14'].size() == torch.Size([])):
+                model_outputs['nsfw-image-oai-clip-vit-l-14'] = model_outputs['nsfw-image-oai-clip-vit-l-14'].view(-1)
+
 
             if "postprocess_features" in yml:
                 for k in yml["postprocess_features"]:
@@ -192,11 +213,41 @@ def process_helper(
             writer.update_time_store(sample_time, loader_time)
 
             t_loader_start = time.time()
+        
+        entries_w_scores = []
+        score_idx = 0
+        all_scores = writer.parquet_store['nsfw-image-score']
+        with open(group + "text_with_image_paths.jsonl", 'r') as f:
+            in_file = list(f)
+            for i in in_file:
+                entry = json.loads(i)
+                score = []
+                for image in entry["images"]:
+                    if image == None:
+                        score.append(None)
+                    else:
+                        #print(all_scores[score_idx//512])
+                        score.append(all_scores[score_idx//512].view(-1)[score_idx%512].item())
+                        score_idx+=1
+                entry['nsfw_scores'] = score
+                entries_w_scores.append(entry)
+        
+        process_time_end = time.time()
+        process_time = process_time_end - process_time_start
+        im_per_sec = len(all_scores) / process_time
+        writer.update_process_time(process_time, im_per_sec)
+
+        with open(group + "nsfw_scored_text_with_image_paths.jsonl", 'w') as f:
+            for entry in entries_w_scores:
+                f.write(json.dumps(entry) + "\n")
 
         logging.info(f"starting to write: {writer.name}")
         out_queue.put_nowait((writer, yml["output_metadata_dir"]))
         time.sleep(5)
         logging.info(f"continuing on gpu!")
+    total_end_time = time.time()
+    avg_im_time = image_count / (total_end_time - total_start_time)
+    print(f"average image processing time: {avg_im_time}")
 
 
 def write_helper(num_groups, receive_queue, done_queue):
@@ -238,6 +289,7 @@ def write_helper(num_groups, receive_queue, done_queue):
 def process(
     yml,
 ):
+    process_start = time.time()
     job_friendly_name = "anon"
     if type(yml) is str:
         # parse yml and check resulting dict
@@ -255,7 +307,8 @@ def process(
         update_registry(custom)
 
     # import from registry here after we have updated
-    from dataset2metadata.registry import (
+    # REMOVED dataset2metadata.~
+    from registry import (
         model_lookup,
         postprocess_feature_lookup,
         postprocess_parquet_lookup,
@@ -265,18 +318,20 @@ def process(
     fs, output_path = fsspec.core.url_to_fs(yml["output_metadata_dir"])
     fs.makedirs(output_path, exist_ok=True)
 
+    # Oscar: GET subdirectories holding the data
+    input_dir = yml["input_tars"] + "/" if yml["input_tars"][-1] != "/" else yml["input_tars"]
+    subs = []
+    for dir in os.listdir(input_dir):
+        if os.path.isdir(input_dir + dir):
+            subs.append(dir)
     # assign a name to the group of shards being processed
     groups = None
-    if "tars_per_wds" in yml and yml["tars_per_wds"] > 0:
-        groups = [
-            yml["input_tars"][i : i + yml["tars_per_wds"]]
-            for i in range(0, len(yml["input_tars"]), yml["tars_per_wds"])
-        ]
-    else:
-        groups = [
-            yml["input_tars"],
-        ]
 
+    # Oscar: SAVE image/jsonl files parent folder instead
+    groups = [
+        input_dir + sub_dir + "/text_with_images/" for sub_dir in subs
+    ]
+    
     names = [hashlib.md5(str(g).encode()).hexdigest() for g in groups]
 
     assert len(names) == len(groups)
@@ -349,5 +404,7 @@ def process(
     # signal the i/o thread it should wrap up
     done_queue.put(True)
     p.join()
+    proccess_end = time.time()
+
 
     print("Done.")
