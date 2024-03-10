@@ -1,7 +1,16 @@
 from functools import partial
+import torch
+import os
+from torch.utils.data import Dataset, DataLoader
+from torch.utils.data.distributed import DistributedSampler
+import json
+from PIL import Image
+from torchvision import transforms
+from clip import clip
 
 import webdataset as wds
-from dataset2metadata.preprocessors import json_decoder
+# REMOVED dataset2metadata.~
+from preprocessors import json_decoder
 from webdataset.tariterators import (
     base_plus_ext,
     url_opener,
@@ -56,7 +65,8 @@ def tarfile_to_samples_nothrow(src, handler=wds.warn_and_continue):
 
 def get_to_tuple_directives(models, additional_fields):
     # import here as registry may have updated
-    from dataset2metadata.registry import model_lookup
+    # REMOVED dataset2metadata.~
+    from registry import model_lookup
 
     wrapper_classes = [model_lookup[m] for m in models]
 
@@ -67,12 +77,10 @@ def get_to_tuple_directives(models, additional_fields):
 
     for i, model_class in enumerate(wrapper_classes):
         assert len(model_class.preprocessors) == len(model_class.raw_inputs)
-
         preprocess_directives = [
             (model_class.raw_inputs[k], model_class.preprocessors[k])
             for k in range(len(model_class.preprocessors))
         ]
-
         input_map[models[i]] = []
 
         for j in range(len(preprocess_directives)):
@@ -98,10 +106,36 @@ def get_to_tuple_directives(models, additional_fields):
 
     return unique_derectives, input_map
 
+class ImageData(Dataset):
+    def __init__(self, input_path):
+        with open(input_path + "text_with_image_paths.jsonl", 'r') as f:
+            in_file = list(f)
+            self.images = []
+            for i in in_file:
+                entry = json.loads(i)
+                for image in entry["images"]:
+                    if image != None:
+                        self.images.append(input_path + "images/" + image)
+    
+    def __len__(self):
+        return len(self.images)
+    
+    def __getitem__(self, idx):
+        image = Image.open(self.images[idx], 'r').convert("RGB")
+        transform = transforms.Compose([transforms.ToTensor()])
+        new_im = transform(image)
+        processed_im = clip._transform(n_px=224)(Image.open(self.images[idx], 'r'))
+        processed_txt = partial(clip.tokenize, truncate=True)([""])[0]
+        return [processed_im, processed_txt]
 
+
+
+
+#REMOVED Additional fields
 def create_loader(input_shards, models, additional_fields, nworkers, batch_size):
     # import here as registry may have updated
-    from dataset2metadata.registry import preprocessor_lookup
+    # REMOVED dataset2metadata.~
+    from registry import preprocessor_lookup
 
     (
         unique_derectives,
@@ -110,34 +144,19 @@ def create_loader(input_shards, models, additional_fields, nworkers, batch_size)
 
     tuple_fields = [e[0] for e in unique_derectives]
     unique_preprocessors = [preprocessor_lookup[e[-1]] for e in unique_derectives]
+    
+    try:
+        dataset = ImageData(input_shards)
+    except FileNotFoundError:
+        return None, input_map
 
-    pipeline = [
-        wds.SimpleShardList(input_shards),
-    ]
-
-    pipeline.extend(
-        [
-            wds.split_by_worker,
-            tarfile_to_samples_nothrow,
-            # wds.tarfile_to_samples(handler=wds.warn_and_continue),
-            wds.decode(
-                "pilrgb",
-                partial(json_decoder, json_keys=additional_fields),
-                handler=wds.warn_and_continue,
-            ),
-            wds.rename(image="jpg;png;jpeg;webp", text="txt"),
-            wds.to_tuple(*tuple_fields),
-            wds.map_tuple(*unique_preprocessors),
-            wds.batched(batch_size, partial=True),
-        ]
-    )
-
-    loader = wds.WebLoader(
-        wds.DataPipeline(*pipeline),
-        batch_size=None,
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
         shuffle=False,
         num_workers=nworkers,
-        persistent_workers=True,
+        drop_last=False,
+        pin_memory=True,
     )
 
     return loader, input_map
