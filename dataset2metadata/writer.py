@@ -51,6 +51,9 @@ class Writer(object):
         # store stats about how long each batch took
         self.time_store = []
 
+        # store how long each group took to process (from reading data to writing output)
+        self.total_time_store = {}
+
     def update_feature_store(self, k, v):
         if self.use_datacomp_keys:
             if k in d2m_to_datacomp_keys:
@@ -76,6 +79,9 @@ class Writer(object):
                 "loader time (s)": loader_time,
             }
         )
+    
+    def update_process_time(self, process_time):
+        self.total_time_store["group processing time (s)"] = process_time
 
     def write(self, out_dir_path):
         try:
@@ -135,6 +141,8 @@ class Writer(object):
                             "sample time (s)": total_load_time,
                             "loader time (s)": total_inf_time,
                             "number of samples": num_samples,
+                            "group processing time (s)": self.total_time_store["group processing time (s)"],
+                            "images per second": num_samples / self.total_time_store["group processing time (s)"],
                         },
                         f,
                     )
