@@ -233,8 +233,7 @@ def process_helper(
         
         process_time_end = time.time()
         process_time = process_time_end - process_time_start
-        im_per_sec = len(all_scores) / process_time
-        writer.update_process_time(process_time, im_per_sec)
+        writer.update_process_time(process_time)
 
         with open(group + "nsfw_scored_text_with_image_paths.jsonl", 'w') as f:
             for entry in entries_w_scores:
@@ -288,7 +287,6 @@ def write_helper(num_groups, receive_queue, done_queue):
 def process(
     yml,
 ):
-    process_start = time.time()
     job_friendly_name = "anon"
     if type(yml) is str:
         # parse yml and check resulting dict
@@ -403,7 +401,5 @@ def process(
     # signal the i/o thread it should wrap up
     done_queue.put(True)
     p.join()
-    proccess_end = time.time()
-
 
     print("Done.")
