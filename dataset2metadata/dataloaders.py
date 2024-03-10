@@ -9,8 +9,7 @@ from torchvision import transforms
 from clip import clip
 
 import webdataset as wds
-# REMOVED dataset2metadata.~
-from preprocessors import json_decoder
+from dataset2metadata.preprocessors import json_decoder
 from webdataset.tariterators import (
     base_plus_ext,
     url_opener,
